@@ -5,6 +5,22 @@ const commands = [
     new SlashCommandBuilder()
         .setName('clash_br')
         .setDescription('Start Clash of Creations Battle Royale')
+        .addStringOption(option =>
+            option
+                .setName('themed')
+                .setDescription('Set true to enable AI-generated theme voting')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'true', value: 'true' },
+                    { name: 'false', value: 'false' }
+                )
+        )
+        .addStringOption(option =>
+            option
+                .setName('custom_theme')
+                .setDescription('Optional custom inspiration for AI themes')
+                .setRequired(false)
+        )
         .toJSON()
 ];
 
