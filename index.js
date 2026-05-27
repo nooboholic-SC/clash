@@ -8,7 +8,10 @@ const {
     TextInputBuilder,
     TextInputStyle,
     EmbedBuilder,
-    Events
+    Events,
+    REST,
+    Routes,
+    SlashCommandBuilder
 } = require('discord.js');
 
 require('dotenv').config();
@@ -19,6 +22,55 @@ const client = new Client({
 
 const activeGames = new Map();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+const commands = [
+    new SlashCommandBuilder()
+        .setName('clash_br')
+        .setDescription('Start Clash of Creations Battle Royale')
+        .addStringOption(option =>
+            option
+                .setName('themed')
+                .setDescription('Set true to enable AI-generated theme voting')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'true', value: 'true' },
+                    { name: 'false', value: 'false' }
+                )
+        )
+        .addStringOption(option =>
+            option
+                .setName('custom_theme')
+                .setDescription('Optional custom inspiration for AI themes')
+                .setRequired(false)
+        )
+        .toJSON()
+];
+
+async function deployCommandsOnStartup() {
+    const appId = process.env.CLIENT_ID || process.env.APPLICATION_ID;
+    const guildId = process.env.GUILD_ID;
+    const token = process.env.TOKEN;
+
+    if (!token) {
+        throw new Error('Missing TOKEN in .env');
+    }
+
+    if (!appId) {
+        throw new Error('Missing CLIENT_ID (or APPLICATION_ID) in .env');
+    }
+
+    const rest = new REST({ version: '10' }).setToken(token);
+
+    console.log('Deploying slash command(s) from index.js startup...');
+
+    if (guildId) {
+        await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands });
+        console.log(`✅ Guild commands deployed to guild ${guildId}`);
+    } else {
+        await rest.put(Routes.applicationCommands(appId), { body: commands });
+        console.log('✅ Global commands deployed (can take up to 1 hour to appear).');
+    }
+}
 
 client.once(Events.ClientReady, () => {
     console.log(`Logged in as ${client.user.tag}`);
@@ -175,6 +227,8 @@ client.on(Events.InteractionCreate, async interaction => {
             return interaction.reply({ content: 'A game is already running.', ephemeral: true });
         }
 
+        await interaction.deferReply();
+
         const themed = normalizeFlag(interaction.options.getString('themed') || 'false');
         const customTheme = interaction.options.getString('custom_theme') || '';
 
@@ -194,7 +248,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 game.themeOptions = await getThemesFromAI(customTheme);
             } catch (err) {
                 activeGames.delete(interaction.guild.id);
-                return interaction.reply({ content: `Failed to generate themes: ${err.message}`, ephemeral: true });
+                return interaction.editReply(`Failed to generate themes: ${err.message}`);
             }
 
             const row = new ActionRowBuilder().addComponents(
@@ -203,10 +257,8 @@ client.on(Events.InteractionCreate, async interaction => {
                 )
             );
 
-            await interaction.reply({
-                content:
-                    '🎭 **Themed Clash Mode**\nVote for the battle theme (60s):\n' +
-                    game.themeOptions.map((t, i) => `${i + 1}. ${t}`).join('\n'),
+            await interaction.editReply({
+                content: `🎭 **Themed Clash Mode**\nVote for the battle theme (60s):\n` + game.themeOptions.map((t, i) => `${i + 1}. ${t}`).join('\n'),
                 components: [row]
             });
 
@@ -228,7 +280,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 new ButtonBuilder().setCustomId('join_clash').setLabel('Join Battle').setStyle(ButtonStyle.Success)
             );
 
-            await interaction.reply({ content: '⚔️ Clash started! Join in 3 minutes.', components: [row] });
+            await interaction.editReply({ content: '⚔️ Clash started! Join in 3 minutes.', components: [row] });
         }
 
         const joinDelay = themed ? 60000 : 0;
@@ -298,4 +350,12 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 });
 
-client.login(process.env.TOKEN);
+(async () => {
+    try {
+        await deployCommandsOnStartup();
+        await client.login(process.env.TOKEN);
+    } catch (err) {
+        console.error('Startup failed:', err.message || err);
+        process.exit(1);
+    }
+})();
