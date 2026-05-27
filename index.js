@@ -182,6 +182,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await game.hostInteraction.editReply({ content: `⚔️ Join phase (1 minute).\nJoined: ${joinedList(game)}`, components: [joinRow()] });
       return;
     }
+  }
 
     if (interaction.customId.startsWith('vote_theme_')) {
       if (game.phase !== 'theme_vote') return interaction.reply({ content: 'Theme voting is closed.', ephemeral: true });
