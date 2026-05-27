@@ -61,24 +61,45 @@ function parseJsonObjectFromResponse(data) {
       } catch {}
     }
   }
+  if (typeof data?.output_text === 'string') {
+    const match = data.output_text.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch {}
+    }
+  }
   return null;
 }
 
+const THEME_ADJECTIVES = ['Mythic', 'Cyber', 'Elemental', 'Shadow', 'Neon', 'Ancient', 'Galactic', 'Legendary', 'Arcane', 'Mutant'];
+const THEME_SUBJECTS = ['Guardians', 'Artifacts', 'Creatures', 'Heroes', 'Villains', 'Machines', 'Warriors', 'Titans', 'Inventors', 'Beasts'];
+
+function localDynamicThemes() {
+  const pool = new Set();
+  while (pool.size < 3) {
+    const a = THEME_ADJECTIVES[Math.floor(Math.random() * THEME_ADJECTIVES.length)];
+    const b = THEME_SUBJECTS[Math.floor(Math.random() * THEME_SUBJECTS.length)];
+    pool.add(`${a} ${b}`);
+  }
+  return [...pool];
+}
+
 async function generateThemeOptionsAI() {
-  if (!OPENAI_API_KEY) return ['Weapons', 'Superheroes', 'Jungle Animals'];
+  if (!OPENAI_API_KEY) return localDynamicThemes();
   const prompt = 'Generate exactly 3 short, fun, battle-friendly creation themes inspired by examples like Weapons, Superheroes, Jungle Animals. Return strict JSON: {"themes":["Theme 1","Theme 2","Theme 3"]}';
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: JSON.stringify({ model: 'gpt-4.1-mini', input: prompt, max_output_tokens: 120 })
   });
-  if (!response.ok) return ['Weapons', 'Superheroes', 'Jungle Animals'];
+  if (!response.ok) return localDynamicThemes();
   const data = await response.json();
   const parsed = parseJsonObjectFromResponse(data);
   const themes = parsed?.themes;
-  if (!Array.isArray(themes)) return ['Weapons', 'Superheroes', 'Jungle Animals'];
+  if (!Array.isArray(themes)) return localDynamicThemes();
   const cleaned = themes.map(t => String(t).trim()).filter(Boolean).slice(0, 3);
-  return cleaned.length === 3 ? cleaned : ['Weapons', 'Superheroes', 'Jungle Animals'];
+  return cleaned.length === 3 ? cleaned : localDynamicThemes();
 }
 
 async function deployCommandsOnStartup() {
@@ -114,16 +135,17 @@ async function judgeBattleAI(a, b, theme) {
     'Return strict JSON: {"winner":"A or B","reason":"one-line fact/story"}'
   ].join('\n');
 
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: JSON.stringify({ model: 'gpt-4.1-mini', input: prompt, max_output_tokens: 180 })
-  });
-
-  if (!response.ok) return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: `${a} and ${b} clash hard, but one counters the other more effectively.` };
-  const data = await response.json();
-  const parsed = parseJsonObjectFromResponse(data);
-  if (parsed?.winner === 'A' || parsed?.winner === 'B') return parsed;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: 'gpt-4.1-mini', input: prompt, max_output_tokens: 180 })
+    });
+    if (!response.ok) continue;
+    const data = await response.json();
+    const parsed = parseJsonObjectFromResponse(data);
+    if ((parsed?.winner === 'A' || parsed?.winner === 'B') && parsed?.reason) return parsed;
+  }
   return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: `${a} versus ${b} came down to speed, range, and overall battle advantage.` };
 }
 
@@ -275,6 +297,9 @@ async function concludeSubmission(interaction, game) {
 (async () => {
   try {
     await deployCommandsOnStartup();
+    if (!OPENAI_API_KEY) {
+      console.warn('⚠️ OPENAI_API_KEY is not set. AI theme generation and AI battle judging will use dynamic local fallback.');
+    }
     await client.login(process.env.TOKEN);
   } catch (err) {
     console.error('Startup failed:', err.message || err);
