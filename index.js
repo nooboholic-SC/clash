@@ -18,8 +18,6 @@ require('dotenv').config();
 const JOIN_MS = 60000;
 const THEME_VOTE_MS = 60000;
 const SUBMIT_MS = 120000;
-const THEMES = ['superhero', 'maths', 'soft things', 'hard things', 'animals', 'space', 'ocean', 'robots'];
-
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const activeGames = new Map();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -44,8 +42,43 @@ function playerMentions(game, withStatus = false) {
   return lines.length ? lines.join(', ') : 'Nobody yet';
 }
 
-function randomThemes() {
-  return [...THEMES].sort(() => Math.random() - 0.5).slice(0, 3);
+function parseJsonObjectFromResponse(data) {
+  if (data?.output_text) {
+    try {
+      return JSON.parse(data.output_text);
+    } catch {}
+  }
+  const parts = data?.output?.flatMap(item => item.content || []) || [];
+  for (const part of parts) {
+    if (part.type === 'output_text' && part.text) {
+      try {
+        return JSON.parse(part.text);
+      } catch {}
+    }
+    if (part.type === 'text' && part.text) {
+      try {
+        return JSON.parse(part.text);
+      } catch {}
+    }
+  }
+  return null;
+}
+
+async function generateThemeOptionsAI() {
+  if (!OPENAI_API_KEY) return ['Weapons', 'Superheroes', 'Jungle Animals'];
+  const prompt = 'Generate exactly 3 short, fun, battle-friendly creation themes inspired by examples like Weapons, Superheroes, Jungle Animals. Return strict JSON: {"themes":["Theme 1","Theme 2","Theme 3"]}';
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: JSON.stringify({ model: 'gpt-4.1-mini', input: prompt, max_output_tokens: 120 })
+  });
+  if (!response.ok) return ['Weapons', 'Superheroes', 'Jungle Animals'];
+  const data = await response.json();
+  const parsed = parseJsonObjectFromResponse(data);
+  const themes = parsed?.themes;
+  if (!Array.isArray(themes)) return ['Weapons', 'Superheroes', 'Jungle Animals'];
+  const cleaned = themes.map(t => String(t).trim()).filter(Boolean).slice(0, 3);
+  return cleaned.length === 3 ? cleaned : ['Weapons', 'Superheroes', 'Jungle Animals'];
 }
 
 async function deployCommandsOnStartup() {
@@ -72,7 +105,7 @@ async function deployCommandsOnStartup() {
 }
 
 async function judgeBattleAI(a, b, theme) {
-  if (!OPENAI_API_KEY) return { winner: 'A', reason: `${a} has a stronger practical advantage.` };
+  if (!OPENAI_API_KEY) return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: `${a} and ${b} are both strong picks, but one gets the tactical edge in this matchup.` };
   const prompt = [
     'Decide 1v1 weapon winner with practical facts.',
     `Theme: ${theme || 'open'}`,
@@ -87,13 +120,11 @@ async function judgeBattleAI(a, b, theme) {
     body: JSON.stringify({ model: 'gpt-4.1-mini', input: prompt, max_output_tokens: 180 })
   });
 
-  if (!response.ok) return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: `${a} vs ${b}: one had a better matchup edge.` };
+  if (!response.ok) return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: `${a} and ${b} clash hard, but one counters the other more effectively.` };
   const data = await response.json();
-  try {
-    return JSON.parse(data.output_text || '{}');
-  } catch {
-    return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: 'Small tactical edge decided this clash.' };
-  }
+  const parsed = parseJsonObjectFromResponse(data);
+  if (parsed?.winner === 'A' || parsed?.winner === 'B') return parsed;
+  return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: `${a} versus ${b} came down to speed, range, and overall battle advantage.` };
 }
 
 async function runTournament(channel, players, theme) {
@@ -104,7 +135,9 @@ async function runTournament(channel, players, theme) {
     for (let i = 0; i < shuffled.length; i += 2) {
       if (shuffled[i + 1]) pairings.push(`@${shuffled[i].user.username} vs. @${shuffled[i + 1].user.username}`);
     }
-    await channel.send(`Let the battle begin! 🎉\n${players.length} players have entered the arena\nCreations will face off in exciting matchups\nOnly one creation will emerge victorious\nMay the best creation win!\n\nRound ${round} | ${OPENING_ROUND_NAME}\nThere are ${players.length} players remaining.\n\nThe following players will battle it out:\n${pairings.join('\n')}`);
+    await channel.send({
+      embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`Let the battle begin! 🎉\n${players.length} players have entered the arena\nCreations will face off in exciting matchups\nOnly one creation will emerge victorious\nMay the best creation win!\n\nRound ${round} | ${OPENING_ROUND_NAME}\nThere are ${players.length} players remaining.\n\nThe following players will battle it out:\n${pairings.join('\n')}`)]
+    });
     const next = [];
     for (let i = 0; i < shuffled.length; i += 2) {
       const p1 = shuffled[i];
@@ -114,11 +147,15 @@ async function runTournament(channel, players, theme) {
         await channel.send(`🏆 ${p1.user.username} advances (no opponent).`);
         continue;
       }
-      await channel.send(`\nClash of Creations: Battle Royale\nBattle between ‎${p1.user.username}‎ and ‎${p2.user.username}‎!\n@${p1.user.username}: ${p1.weapon}\n@${p2.user.username}: ${p2.weapon}\nImage\nRound ${round} | ${OPENING_ROUND_NAME}`);
+      await channel.send({
+        embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`Battle between ‎${p1.user.username}‎ and ‎${p2.user.username}‎!\n@${p1.user.username}: ${p1.weapon}\n@${p2.user.username}: ${p2.weapon}\nImage\nRound ${round} | ${OPENING_ROUND_NAME}`)]
+      });
       const d = await judgeBattleAI(p1.weapon, p2.weapon, theme);
       const w = d.winner === 'B' ? p2 : p1;
       next.push(w);
-      await channel.send(`\nClash of Creations: Battle Royale\nThe Victor 🏆\n‎${w.user.username}‎ with ${w.weapon}!\nReason\n${d.reason || 'Winner had the better combat edge.'}`);
+      await channel.send({
+        embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`The Victor 🏆\n‎${w.user.username}‎ with ${w.weapon}!\nReason\n${d.reason || 'Winner had the better combat edge.'}`)]
+      });
     }
     players = next;
     round++;
@@ -134,9 +171,9 @@ client.on(Events.InteractionCreate, async interaction => {
     await interaction.deferReply();
 
     const themed = String(interaction.options.getString('themed')).toLowerCase() === 'true';
-    const game = { phase: 'join', themed, players: new Map(), themeOptions: themed ? randomThemes() : [], themeVotes: new Map(), chosenTheme: null, hostInteraction: interaction, submitTimer: null, progressed: false };
+    const game = { phase: 'join', themed, players: new Map(), themeOptions: [], themeVotes: new Map(), chosenTheme: null, hostInteraction: interaction, submitTimer: null, progressed: false };
     activeGames.set(interaction.guild.id, game);
-    await interaction.editReply({ content: `:fight: Clash of Creations: Battle Royale\nStatus\nWaiting for more players (at least 3)\nTheme\nTheme 🎭 will be determined by a vote!\nLenient theme enforcement is enabled.\nPlayers [${game.players.size}]\n${playerMentions(game)}`, components: [joinRow()] });
+    await interaction.editReply({ embeds: [new EmbedBuilder().setTitle(':fight: Clash of Creations: Battle Royale').setDescription(`Status\nWaiting for more players (at least 3)\nTheme\nTheme 🎭 will be determined by a vote!\nLenient theme enforcement is enabled.\nPlayers [${game.players.size}]\n${playerMentions(game)}`)], components: [joinRow()] });
 
     setTimeout(async () => {
       if (!activeGames.has(interaction.guild.id)) return;
@@ -148,8 +185,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (game.themed) {
         game.phase = 'theme_vote';
+        game.themeOptions = await generateThemeOptionsAI();
         const voteRow = new ActionRowBuilder().addComponents(...game.themeOptions.map((name, idx) => new ButtonBuilder().setCustomId(`vote_theme_${idx}`).setLabel(name).setStyle(ButtonStyle.Primary)));
-        await interaction.followUp({ content: `\nClash of Creations: Battle Royale\nTheme Voting Time! 🎨\nVote for your favorite theme! The winning theme will determine what kind of creations you can submit.\n\n${game.themeOptions.map((name, i) => `${name} - Votes: ${[...game.themeVotes.values()].filter(v => v === i).length}`).join('\n')}`, components: [voteRow] });
+        await interaction.followUp({ embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`Theme Voting Time! 🎨\nVote for your favorite theme! The winning theme will determine what kind of creations you can submit.\n\n${game.themeOptions.map((name, i) => `${name} - Votes: ${[...game.themeVotes.values()].filter(v => v === i).length}`).join('\n')}`)], components: [voteRow] });
 
         setTimeout(async () => {
           if (!activeGames.has(interaction.guild.id)) return;
@@ -157,13 +195,13 @@ client.on(Events.InteractionCreate, async interaction => {
           const best = counts.indexOf(Math.max(...counts));
           game.chosenTheme = game.themeOptions[best] || game.themeOptions[0];
           game.phase = 'submit';
-          await interaction.followUp(`\nClash of Creations: Battle Royale\nThe Theme Has Been Chosen! 🎉\n${game.chosenTheme} won the vote!\nGet ready to submit your themed creation...`);
-          await interaction.followUp({ content: `\nClash of Creations: Battle Royale\nWelcome to Creation Clash: Battle Royale! 🏆\nTheme: ${game.chosenTheme}\nAll submissions must fit this theme!\n\nHow to Play:\nThis game is like rock-paper-scissors, but with a twist!\nSubmit any object, concept, or person you want to fight with\nAn AI judge 🤖 will determine the winner of each match\nWinners advance until only one creation remains\n\n⏳ You have 2 minutes to submit your creation \nPlayers who don't submit in time will be eliminated`, components: [submitRow()] });
+          await interaction.followUp({ embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`The Theme Has Been Chosen! 🎉\n${game.chosenTheme} won the vote!\nGet ready to submit your themed creation...`)] });
+          await interaction.followUp({ embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`Welcome to Creation Clash: Battle Royale! 🏆\nTheme: ${game.chosenTheme}\nAll submissions must fit this theme!\n\nHow to Play:\nThis game is like rock-paper-scissors, but with a twist!\nSubmit any object, concept, or person you want to fight with\nAn AI judge 🤖 will determine the winner of each match\nWinners advance until only one creation remains\n\n⏳ You have 2 minutes to submit your creation \nPlayers who don't submit in time will be eliminated`)], components: [submitRow()] });
           game.submitTimer = setTimeout(() => concludeSubmission(interaction, game), SUBMIT_MS);
         }, THEME_VOTE_MS);
       } else {
         game.phase = 'submit';
-        await interaction.followUp({ content: `\nClash of Creations: Battle Royale\nWelcome to Creation Clash: Battle Royale! 🏆\nTheme: Open\nAll submissions must fit this theme!\n\nHow to Play:\nThis game is like rock-paper-scissors, but with a twist!\nSubmit any object, concept, or person you want to fight with\nAn AI judge 🤖 will determine the winner of each match\nWinners advance until only one creation remains\n\n⏳ You have 2 minutes to submit your creation \nPlayers who don't submit in time will be eliminated`, components: [submitRow()] });
+        await interaction.followUp({ embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`Welcome to Creation Clash: Battle Royale! 🏆\nTheme: Open\nAll submissions must fit this theme!\n\nHow to Play:\nThis game is like rock-paper-scissors, but with a twist!\nSubmit any object, concept, or person you want to fight with\nAn AI judge 🤖 will determine the winner of each match\nWinners advance until only one creation remains\n\n⏳ You have 2 minutes to submit your creation \nPlayers who don't submit in time will be eliminated`)], components: [submitRow()] });
         game.submitTimer = setTimeout(() => concludeSubmission(interaction, game), SUBMIT_MS);
       }
     }, JOIN_MS);
@@ -178,7 +216,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (game.players.has(interaction.user.id)) return interaction.reply({ content: 'You already joined.', ephemeral: true });
       game.players.set(interaction.user.id, { user: interaction.user, weapon: null });
       await interaction.reply({ content: '✅ Joined.', ephemeral: true });
-      await game.hostInteraction.editReply({ content: `:fight: Clash of Creations: Battle Royale\nStatus\nWaiting for more players (at least 3)\nTheme\nTheme 🎭 will be determined by a vote!\nLenient theme enforcement is enabled.\nPlayers [${game.players.size}]\n${playerMentions(game)}`, components: [joinRow()] });
+      await game.hostInteraction.editReply({ embeds: [new EmbedBuilder().setTitle(':fight: Clash of Creations: Battle Royale').setDescription(`Status\nWaiting for more players (at least 3)\nTheme\nTheme 🎭 will be determined by a vote!\nLenient theme enforcement is enabled.\nPlayers [${game.players.size}]\n${playerMentions(game)}`)], components: [joinRow()] });
       return;
     }
 
@@ -228,7 +266,7 @@ async function concludeSubmission(interaction, game) {
     activeGames.delete(interaction.guild.id);
     return;
   }
-  await interaction.followUp(`\nClash of Creations: Battle Royale\nAll creations have been submitted!\n${[...game.players.values()].map(p => `${p.weapon ? ':checked:' : ':x:'} @${p.user.username}`).join('\n')}\n\nThink of a creation you want to fight with.`);
+  await interaction.followUp({ embeds: [new EmbedBuilder().setTitle('Clash of Creations: Battle Royale').setDescription(`All creations have been submitted!\n${[...game.players.values()].map(p => `${p.weapon ? ':checked:' : ':x:'} @${p.user.username}`).join('\n')}\n\nThink of a creation you want to fight with.`)] });
   await runTournament(interaction.channel, valid, game.chosenTheme);
   activeGames.delete(interaction.guild.id);
 }
