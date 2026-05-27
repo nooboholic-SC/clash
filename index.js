@@ -248,12 +248,13 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!player) return interaction.reply({ content: 'Only joined players can submit.', ephemeral: true });
     if (player.weapon) return interaction.reply({ content: 'You already submitted your weapon.', ephemeral: true });
     player.weapon = interaction.fields.getTextInputValue('weapon');
+    await interaction.reply({ content: `✅ Submitted: **${player.weapon}**`, ephemeral: true });
     const submitted = [...game.players.values()].filter(p => p.weapon).length;
     if (submitted === game.players.size && !game.progressed) {
       if (game.submitTimer) clearTimeout(game.submitTimer);
       await concludeSubmission(game.hostInteraction, game);
     }
-    return interaction.reply({ content: `✅ Submitted: **${player.weapon}**`, ephemeral: true });
+    return;
   }
 });
 
