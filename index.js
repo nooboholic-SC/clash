@@ -20,7 +20,7 @@ const client = new Client({
 const activeGames = new Map();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-client.once('ready', () => {
+client.once(Events.ClientReady, () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
