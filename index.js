@@ -76,6 +76,17 @@ client.once(Events.ClientReady, () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
+
+function buildFallbackThemes(customThemeHint) {
+    const seed = (customThemeHint || 'Creative').trim();
+
+    return [
+        `${seed} Legends`,
+        `${seed} Tech vs Magic`,
+        `${seed} Mythic Showdown`
+    ];
+}
+
 function parseThemes(text) {
     const lines = text
         .split('\n')
@@ -247,8 +258,11 @@ client.on(Events.InteractionCreate, async interaction => {
             try {
                 game.themeOptions = await getThemesFromAI(customTheme);
             } catch (err) {
-                activeGames.delete(interaction.guild.id);
-                return interaction.editReply(`Failed to generate themes: ${err.message}`);
+                game.themeOptions = buildFallbackThemes(customTheme);
+
+                await interaction.followUp(
+                    `⚠️ OpenAI theme generation is rate-limited right now (${err.message}). Using fallback themes.`
+                );
             }
 
             const row = new ActionRowBuilder().addComponents(

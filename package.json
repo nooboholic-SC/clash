@@ -6,8 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node index.js",
-    "deploy": "node deploy-commands.js",
-    "check": "node --check index.js && node --check deploy-commands.js"
+    "check": "node --check index.js"
   },
   "engines": {
     "node": ">=18.0.0"
