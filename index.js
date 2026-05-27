@@ -48,11 +48,23 @@ async function deployCommandsOnStartup() {
   const appId = process.env.CLIENT_ID || process.env.APPLICATION_ID;
   const guildId = process.env.GUILD_ID;
   const token = process.env.TOKEN;
-  if (!token) throw new Error('Missing TOKEN in .env');
-  if (!appId) throw new Error('Missing CLIENT_ID (or APPLICATION_ID) in .env');
+
+  const missing = [];
+  if (!token) missing.push('TOKEN');
+  if (!appId) missing.push('CLIENT_ID or APPLICATION_ID');
+
+  if (missing.length) {
+    throw new Error(`Missing required env vars: ${missing.join(', ')}`);
+  }
+
   const rest = new REST({ version: '10' }).setToken(token);
-  if (guildId) await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands });
-  else await rest.put(Routes.applicationCommands(appId), { body: commands });
+  if (guildId) {
+    await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands });
+    console.log(`✅ Commands deployed to guild ${guildId}`);
+  } else {
+    await rest.put(Routes.applicationCommands(appId), { body: commands });
+    console.log('✅ Global commands deployed (can take up to 1 hour).');
+  }
 }
 
 async function judgeBattleAI(a, b, theme) {
@@ -182,7 +194,6 @@ client.on(Events.InteractionCreate, async interaction => {
       await game.hostInteraction.editReply({ content: `⚔️ Join phase (1 minute).\nJoined: ${joinedList(game)}`, components: [joinRow()] });
       return;
     }
-  }
 
     if (interaction.customId.startsWith('vote_theme_')) {
       if (game.phase !== 'theme_vote') return interaction.reply({ content: 'Theme voting is closed.', ephemeral: true });
@@ -222,6 +233,7 @@ client.on(Events.InteractionCreate, async interaction => {
     await client.login(process.env.TOKEN);
   } catch (err) {
     console.error('Startup failed:', err.message || err);
+    console.error('Expected .env keys: TOKEN, CLIENT_ID (or APPLICATION_ID), GUILD_ID (optional), OPENAI_API_KEY (optional).');
     process.exit(1);
   }
 })();
