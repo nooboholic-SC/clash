@@ -1,310 +1,239 @@
 const {
-    Client,
-    GatewayIntentBits,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
-    EmbedBuilder,
-    Events
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  EmbedBuilder,
+  Events,
+  REST,
+  Routes,
+  SlashCommandBuilder
 } = require('discord.js');
-
 require('dotenv').config();
 
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds]
-});
+const JOIN_MS = 60000;
+const THEME_VOTE_MS = 60000;
+const SUBMIT_MS = 60000;
+const THEMES = ['superhero', 'maths', 'soft things', 'hard things', 'animals', 'space', 'ocean', 'robots'];
 
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const activeGames = new Map();
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}`);
-});
+const commands = [
+  new SlashCommandBuilder()
+    .setName('clash_br')
+    .setDescription('Start Clash of Creations Battle Royale')
+    .addStringOption(option => option.setName('themed').setDescription('Enable themed voting').setRequired(true).addChoices({ name: 'true', value: 'true' }, { name: 'false', value: 'false' }))
+    .toJSON()
+];
 
-// -------------------------
-// FAKE AI JUDGE
-// -------------------------
-function judgeBattle(a, b) {
-    const reasons = [
-        `${a} completely overwhelmed ${b} with unexpected power.`,
-        `${b} stood no chance against the chaos of ${a}.`,
-        `${a} used pure creativity to defeat ${b}.`,
-        `${b} got outsmarted in the weirdest possible way.`,
-        `${a} proved superior in an absurd showdown.`,
-        `${b} underestimated ${a} and paid the price.`
-    ];
+const joinRow = () => new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('join_clash').setLabel('Join Battle').setStyle(ButtonStyle.Success));
+const submitRow = () => new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('submit_weapon_open').setLabel('Submit Weapon').setStyle(ButtonStyle.Primary));
 
-    const winner = Math.random() > 0.5 ? a : b;
-
-    return {
-        winner,
-        reason:
-            reasons[Math.floor(Math.random() * reasons.length)]
-    };
+function joinedList(game) {
+  const names = [...game.players.values()].map(p => p.user.username);
+  return names.length ? names.join(', ') : 'Nobody yet';
 }
 
-// -------------------------
-// TOURNAMENT
-// -------------------------
-async function runTournament(channel, players) {
-    let round = 1;
+function randomThemes() {
+  return [...THEMES].sort(() => Math.random() - 0.5).slice(0, 3);
+}
 
-    while (players.length > 1) {
-        await channel.send(
-            `## ⚔️ Round ${round}\nPlayers Remaining: ${players.length}`
-        );
+async function deployCommandsOnStartup() {
+  const appId = process.env.CLIENT_ID || process.env.APPLICATION_ID;
+  const guildId = process.env.GUILD_ID;
+  const token = process.env.TOKEN;
 
-        const nextRound = [];
+  const missing = [];
+  if (!token) missing.push('TOKEN');
+  if (!appId) missing.push('CLIENT_ID or APPLICATION_ID');
 
-        for (let i = 0; i < players.length; i += 2) {
-            const p1 = players[i];
-            const p2 = players[i + 1];
+  if (missing.length) {
+    throw new Error(`Missing required env vars: ${missing.join(', ')}`);
+  }
 
-            if (!p2) {
-                nextRound.push(p1);
+  const rest = new REST({ version: '10' }).setToken(token);
+  if (guildId) {
+    await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands });
+    console.log(`✅ Commands deployed to guild ${guildId}`);
+  } else {
+    await rest.put(Routes.applicationCommands(appId), { body: commands });
+    console.log('✅ Global commands deployed (can take up to 1 hour).');
+  }
+}
 
-                await channel.send(
-                    `🏆 ${p1.user.username} advances automatically!`
-                );
+async function judgeBattleAI(a, b, theme) {
+  if (!OPENAI_API_KEY) return { winner: 'A', reason: `${a} has a stronger practical advantage.` };
+  const prompt = [
+    'Decide 1v1 weapon winner with practical facts.',
+    `Theme: ${theme || 'open'}`,
+    `Weapon A: ${a}`,
+    `Weapon B: ${b}`,
+    'Return strict JSON: {"winner":"A or B","reason":"one-line fact/story"}'
+  ].join('\n');
 
-                continue;
-            }
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: JSON.stringify({ model: 'gpt-4.1-mini', input: prompt, max_output_tokens: 180 })
+  });
 
-            const result = judgeBattle(
-                p1.creation,
-                p2.creation
-            );
+  if (!response.ok) return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: `${a} vs ${b}: one had a better matchup edge.` };
+  const data = await response.json();
+  try {
+    return JSON.parse(data.output_text || '{}');
+  } catch {
+    return { winner: Math.random() > 0.5 ? 'A' : 'B', reason: 'Small tactical edge decided this clash.' };
+  }
+}
 
-            const winner =
-                result.winner === p1.creation ? p1 : p2;
-
-            nextRound.push(winner);
-
-            const embed = new EmbedBuilder()
-                .setTitle('⚔️ Clash Battle')
-                .setDescription(
-                    `**${p1.user.username}** → ${p1.creation}\n` +
-                    `VS\n` +
-                    `**${p2.user.username}** → ${p2.creation}\n\n` +
-                    `🏆 Winner: **${result.winner}**\n\n` +
-                    `💬 ${result.reason}`
-                );
-
-            await channel.send({
-                embeds: [embed]
-            });
-        }
-
-        players = nextRound;
-        round++;
+async function runTournament(channel, players, theme) {
+  let round = 1;
+  while (players.length > 1) {
+    await channel.send(`## ⚔️ Round ${round} (1v1)\nTheme: **${theme || 'open'}**\nPlayers: ${players.length}`);
+    const next = [];
+    for (let i = 0; i < players.length; i += 2) {
+      const p1 = players[i];
+      const p2 = players[i + 1];
+      if (!p2) {
+        next.push(p1);
+        await channel.send(`🏆 ${p1.user.username} advances (no opponent).`);
+        continue;
+      }
+      const d = await judgeBattleAI(p1.weapon, p2.weapon, theme);
+      const w = d.winner === 'B' ? p2 : p1;
+      next.push(w);
+      const embed = new EmbedBuilder().setTitle('⚔️ 1v1 Battle').setDescription(`**${p1.user.username}** (${p1.weapon}) VS **${p2.user.username}** (${p2.weapon})\n🏆 Winner: **${w.user.username}**\n📘 ${d.reason || 'Winner had the better combat edge.'}`);
+      await channel.send({ embeds: [embed] });
     }
-
-    const champion = players[0];
-
-    await channel.send(
-        `# 👑 Champion: ${champion.user.username}\n` +
-        `Creation: **${champion.creation}**`
-    );
+    players = next;
+    round++;
+  }
+  await channel.send(`# 👑 Champion: ${players[0].user.username}\nWeapon: **${players[0].weapon}**`);
 }
 
-// -------------------------
-// INTERACTION HANDLER
-// -------------------------
+client.once(Events.ClientReady, () => console.log(`Logged in as ${client.user.tag}`));
+
 client.on(Events.InteractionCreate, async interaction => {
+  if (interaction.isChatInputCommand() && interaction.commandName === 'clash_br') {
+    if (activeGames.has(interaction.guild.id)) return interaction.reply({ content: 'A game is already running.', ephemeral: true });
+    await interaction.deferReply();
 
-    // Slash command
-    if (interaction.isChatInputCommand()) {
-        if (interaction.commandName === 'clash_br') {
+    const themed = String(interaction.options.getString('themed')).toLowerCase() === 'true';
+    const game = { phase: 'join', themed, players: new Map(), themeOptions: themed ? randomThemes() : [], themeVotes: new Map(), chosenTheme: null, hostInteraction: interaction };
+    activeGames.set(interaction.guild.id, game);
+    await interaction.editReply({ content: `⚔️ Join phase (1 minute).\nJoined: ${joinedList(game)}`, components: [joinRow()] });
 
-            if (activeGames.has(interaction.guild.id)) {
-                return interaction.reply({
-                    content:
-                        'A game is already running.',
-                    ephemeral: true
-                });
+    setTimeout(async () => {
+      if (!activeGames.has(interaction.guild.id)) return;
+      if (game.players.size < 2) {
+        await interaction.followUp('Not enough joined players.');
+        activeGames.delete(interaction.guild.id);
+        return;
+      }
+
+      if (game.themed) {
+        game.phase = 'theme_vote';
+        const voteRow = new ActionRowBuilder().addComponents(...game.themeOptions.map((name, idx) => new ButtonBuilder().setCustomId(`vote_theme_${idx}`).setLabel(name).setStyle(ButtonStyle.Primary)));
+        await interaction.followUp({ content: '🎭 Voting phase (1 minute). Joined players only, one vote each.', components: [voteRow] });
+
+        setTimeout(async () => {
+          if (!activeGames.has(interaction.guild.id)) return;
+          const counts = [0, 1, 2].map(i => [...game.themeVotes.values()].filter(v => v === i).length);
+          const best = counts.indexOf(Math.max(...counts));
+          game.chosenTheme = game.themeOptions[best] || game.themeOptions[0];
+          game.phase = 'submit';
+          await interaction.followUp({ content: `📝 Theme selected: **${game.chosenTheme}**\nSubmission phase (1 minute). Joined players only.`, components: [submitRow()] });
+
+          setTimeout(async () => {
+            if (!activeGames.has(interaction.guild.id)) return;
+            const valid = [...game.players.values()].filter(p => p.weapon);
+            if (valid.length < 2) {
+              await interaction.followUp('Not enough weapon submissions.');
+              activeGames.delete(interaction.guild.id);
+              return;
             }
+            await interaction.followUp(`🔥 Tournament starts with ${valid.length} players.`);
+            await runTournament(interaction.channel, valid, game.chosenTheme);
+            activeGames.delete(interaction.guild.id);
+          }, SUBMIT_MS);
+        }, THEME_VOTE_MS);
+      } else {
+        game.phase = 'submit';
+        await interaction.followUp({ content: '📝 Submission phase (1 minute). Joined players only.', components: [submitRow()] });
+        setTimeout(async () => {
+          if (!activeGames.has(interaction.guild.id)) return;
+          const valid = [...game.players.values()].filter(p => p.weapon);
+          if (valid.length < 2) {
+            await interaction.followUp('Not enough weapon submissions.');
+            activeGames.delete(interaction.guild.id);
+            return;
+          }
+          await interaction.followUp(`🔥 Tournament starts with ${valid.length} players.`);
+          await runTournament(interaction.channel, valid, null);
+          activeGames.delete(interaction.guild.id);
+        }, SUBMIT_MS);
+      }
+    }, JOIN_MS);
+  }
 
-            const game = {
-                players: new Map()
-            };
+  if (interaction.isButton()) {
+    const game = activeGames.get(interaction.guild.id);
+    if (!game) return interaction.reply({ content: 'No active game.', ephemeral: true });
 
-            activeGames.set(
-                interaction.guild.id,
-                game
-            );
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('join_clash')
-                    .setLabel('Join Battle')
-                    .setStyle(ButtonStyle.Success)
-            );
-
-            await interaction.reply({
-                content:
-                    '⚔️ **Clash of Creations Battle Royale Started!**\n\n' +
-                    'You have **3 minutes** to join.\n' +
-                    'Press the button below!',
-                components: [row]
-            });
-
-            // wait 3 mins
-            setTimeout(async () => {
-
-                if (game.players.size === 0) {
-                    await interaction.followUp(
-                        'Nobody joined.'
-                    );
-
-                    activeGames.delete(
-                        interaction.guild.id
-                    );
-
-                    return;
-                }
-
-                await interaction.followUp(
-                    '📝 Submission phase started!\n' +
-                    'Click **Join Battle** again to submit creation.\n' +
-                    'You have **3 minutes**.'
-                );
-
-                // submission timer
-                setTimeout(async () => {
-
-                    const validPlayers =
-                        [...game.players.values()]
-                        .filter(p => p.creation);
-
-                    if (validPlayers.length < 2) {
-                        await interaction.followUp(
-                            'Not enough players submitted.'
-                        );
-
-                        activeGames.delete(
-                            interaction.guild.id
-                        );
-
-                        return;
-                    }
-
-                    await interaction.followUp(
-                        `🔥 Tournament starting with **${validPlayers.length} players**`
-                    );
-
-                    await runTournament(
-                        interaction.channel,
-                        validPlayers
-                    );
-
-                    activeGames.delete(
-                        interaction.guild.id
-                    );
-
-                }, 180000);
-
-            }, 180000);
-        }
+    if (interaction.customId === 'join_clash') {
+      if (game.phase !== 'join') return interaction.reply({ content: 'Join phase is closed.', ephemeral: true });
+      if (game.players.has(interaction.user.id)) return interaction.reply({ content: 'You already joined.', ephemeral: true });
+      game.players.set(interaction.user.id, { user: interaction.user, weapon: null });
+      await interaction.reply({ content: '✅ Joined.', ephemeral: true });
+      await game.hostInteraction.editReply({ content: `⚔️ Join phase (1 minute).\nJoined: ${joinedList(game)}`, components: [joinRow()] });
+      return;
     }
 
-    // JOIN BUTTON
-    if (interaction.isButton()) {
-        if (interaction.customId === 'join_clash') {
-
-            const game =
-                activeGames.get(
-                    interaction.guild.id
-                );
-
-            if (!game) {
-                return interaction.reply({
-                    content:
-                        'No active game.',
-                    ephemeral: true
-                });
-            }
-
-            if (
-                !game.players.has(
-                    interaction.user.id
-                )
-            ) {
-                game.players.set(
-                    interaction.user.id,
-                    {
-                        user: interaction.user,
-                        creation: null
-                    }
-                );
-            }
-
-            const modal = new ModalBuilder()
-                .setCustomId('submit_creation')
-                .setTitle('Submit Creation');
-
-            const input =
-                new TextInputBuilder()
-                .setCustomId('creation')
-                .setLabel(
-                    'Your creation'
-                )
-                .setPlaceholder(
-                    'Dinosaur, Batman, Internet...'
-                )
-                .setStyle(
-                    TextInputStyle.Short
-                )
-                .setRequired(true);
-
-            modal.addComponents(
-                new ActionRowBuilder()
-                .addComponents(input)
-            );
-
-            await interaction.showModal(
-                modal
-            );
-        }
+    if (interaction.customId.startsWith('vote_theme_')) {
+      if (game.phase !== 'theme_vote') return interaction.reply({ content: 'Theme voting is closed.', ephemeral: true });
+      if (!game.players.has(interaction.user.id)) return interaction.reply({ content: 'Only joined players can vote.', ephemeral: true });
+      if (game.themeVotes.has(interaction.user.id)) return interaction.reply({ content: 'You already voted.', ephemeral: true });
+      const picked = Number(interaction.customId.split('_').pop());
+      game.themeVotes.set(interaction.user.id, picked);
+      return interaction.reply({ content: `Voted: ${game.themeOptions[picked]}`, ephemeral: true });
     }
 
-    // MODAL SUBMIT
-    if (interaction.isModalSubmit()) {
-
-        if (
-            interaction.customId ===
-            'submit_creation'
-        ) {
-
-            const game =
-                activeGames.get(
-                    interaction.guild.id
-                );
-
-            if (!game) return;
-
-            const creation =
-                interaction.fields.getTextInputValue(
-                    'creation'
-                );
-
-            const player =
-                game.players.get(
-                    interaction.user.id
-                );
-
-            if (!player) return;
-
-            player.creation = creation;
-
-            await interaction.reply({
-                content:
-                    `✅ Submitted: **${creation}**`,
-                ephemeral: true
-            });
-        }
+    if (interaction.customId === 'submit_weapon_open') {
+      if (game.phase !== 'submit') return interaction.reply({ content: 'Submission is closed.', ephemeral: true });
+      const player = game.players.get(interaction.user.id);
+      if (!player) return interaction.reply({ content: 'Only joined players can submit.', ephemeral: true });
+      if (player.weapon) return interaction.reply({ content: 'You already submitted your weapon.', ephemeral: true });
+      const modal = new ModalBuilder().setCustomId('submit_weapon').setTitle('Submit Weapon');
+      const input = new TextInputBuilder().setCustomId('weapon').setLabel(game.themed ? `Weapon for ${game.chosenTheme}` : 'Your weapon').setPlaceholder('Sword, calculator cannon, pillow hammer...').setStyle(TextInputStyle.Short).setRequired(true);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return interaction.showModal(modal);
     }
+  }
+
+  if (interaction.isModalSubmit() && interaction.customId === 'submit_weapon') {
+    const game = activeGames.get(interaction.guild.id);
+    if (!game || game.phase !== 'submit') return interaction.reply({ content: 'Submission is closed.', ephemeral: true });
+    const player = game.players.get(interaction.user.id);
+    if (!player) return interaction.reply({ content: 'Only joined players can submit.', ephemeral: true });
+    if (player.weapon) return interaction.reply({ content: 'You already submitted your weapon.', ephemeral: true });
+    player.weapon = interaction.fields.getTextInputValue('weapon');
+    return interaction.reply({ content: `✅ Submitted: **${player.weapon}**`, ephemeral: true });
+  }
 });
 
-client.login(process.env.TOKEN);
+(async () => {
+  try {
+    await deployCommandsOnStartup();
+    await client.login(process.env.TOKEN);
+  } catch (err) {
+    console.error('Startup failed:', err.message || err);
+    console.error('Expected .env keys: TOKEN, CLIENT_ID (or APPLICATION_ID), GUILD_ID (optional), OPENAI_API_KEY (optional).');
+    process.exit(1);
+  }
+})();
