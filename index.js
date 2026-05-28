@@ -384,164 +384,195 @@ async function updateSubmissionStatus(interaction, game) {
   }
 }
 
-// Generate battle fixture (bracket)
-function generateBattleFixture(players, theme) {
-  const shuffled = [...players].sort(() => Math.random() - 0.5);
-  const matchups = [];
-  
-  for (let i = 0; i < shuffled.length; i += 2) {
-    if (shuffled[i + 1]) {
-      matchups.push(`${shuffled[i].user.displayName} vs ${shuffled[i + 1].user.displayName}`);
-    } else {
-      matchups.push(`${shuffled[i].user.displayName} gets a BYE`);
+// Shuffle players once so every fixture and battle uses the same bracket order.
+function shufflePlayers(players) {
+  const shuffled = [...players];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function getPlayerName(player) {
+  return player.displayName || player.user.displayName || player.user.username;
+}
+
+function getByeCounts(battleHistory) {
+  const byeCounts = new Map();
+
+  battleHistory.forEach(battle => {
+    if (battle.bye) {
+      byeCounts.set(battle.bye, (byeCounts.get(battle.bye) || 0) + 1);
+    }
+  });
+
+  return byeCounts;
+}
+
+function selectByePlayer(players, battleHistory) {
+  if (players.length % 2 === 0) return null;
+
+  const byeCounts = getByeCounts(battleHistory);
+  const fewestByes = Math.min(...players.map(player => byeCounts.get(player.user.id) || 0));
+
+  // Prefer the last eligible bracket slot so the first visible pairs stay intact.
+  for (let i = players.length - 1; i >= 0; i--) {
+    const player = players[i];
+    if ((byeCounts.get(player.user.id) || 0) === fewestByes) {
+      return player;
     }
   }
-  
+
+  return players[players.length - 1];
+}
+
+function buildRoundPlan(players, battleHistory = []) {
+  const byePlayer = selectByePlayer(players, battleHistory);
+  const playersToMatch = byePlayer
+    ? players.filter(player => player.user.id !== byePlayer.user.id)
+    : [...players];
+  const matches = [];
+
+  for (let i = 0; i < playersToMatch.length; i += 2) {
+    const playerA = playersToMatch[i];
+    const playerB = playersToMatch[i + 1];
+
+    if (playerA && playerB) {
+      matches.push([playerA, playerB]);
+    } else if (playerA) {
+      // Defensive fallback for unexpected malformed input.
+      return {
+        matches,
+        byePlayer: playerA
+      };
+    }
+  }
+
+  return { matches, byePlayer };
+}
+
+function formatRoundPlan(roundPlan) {
+  const matchups = roundPlan.matches.map(([playerA, playerB]) => {
+    return `⚔️ ${getPlayerName(playerA)} vs ${getPlayerName(playerB)}`;
+  });
+
+  if (roundPlan.byePlayer) {
+    matchups.push(`🎲 ${getPlayerName(roundPlan.byePlayer)} gets a BYE`);
+  }
+
+  return matchups.length > 0 ? matchups.join('\n') : 'No matchups available.';
+}
+
+// Generate battle fixture (bracket)
+function generateBattleFixture(players, theme, battleHistory = []) {
+  const roundPlan = buildRoundPlan(players, battleHistory);
   let fixtureText = `🎭 **Theme:** ${theme || 'Open Battle'}\n👥 **Total Combatants:** ${players.length}\n\n`;
   fixtureText += `**📋 Round 1 Matchups:**\n`;
-  matchups.forEach((matchup, idx) => {
-    fixtureText += `${idx + 1}. ${matchup}\n`;
-  });
-  
-  fixtureText += `\n🎲 *Matches are randomly determined*\n🤖 *Supreme Leader will decide each battle*`;
-  
+  fixtureText += formatRoundPlan(roundPlan)
+    .split('\n')
+    .map((matchup, idx) => `${idx + 1}. ${matchup}`)
+    .join('\n');
+
+  fixtureText += `\n\n🎲 *Bracket order is locked before Round 1*\n🤖 *Supreme Leader will decide each battle*`;
+
   return fixtureText;
 }
 
-// Run the tournament
-// Run the tournament with proper bracket fixture
+// Run the tournament with a locked bracket fixture.
 async function runTournament(channel, players, theme) {
   let round = 1;
-  let remainingPlayers = [...players];
+  let remainingPlayers = shufflePlayers(players);
   const battleHistory = [];
-  
-  // Generate and show battle fixture
-  const fixtureText = generateBattleFixture(players, theme);
+
+  // Generate and show the same Round 1 fixture that will actually be played.
+  const fixtureText = generateBattleFixture(remainingPlayers, theme, battleHistory);
   const fixtureEmbed = new EmbedBuilder()
     .setTitle('🏆 CLASH OF CREATIONS - TOURNAMENT BRACKET 🏆')
     .setColor(0xFF4500)
     .setDescription(fixtureText)
     .setTimestamp();
-  
+
   await channel.send({ embeds: [fixtureEmbed] });
   await delay(MESSAGE_DELAY_MS);
-  
+
   // Tournament begins announcement
   const beginEmbed = new EmbedBuilder()
     .setTitle('⚔️ THE TOURNAMENT BEGINS! ⚔️')
     .setColor(0xFFD700)
     .setDescription('Get ready for an epic battle royale! Each match will be judged by Supreme Leader based on creativity, theme relevance, and battle logic.\n\nMay the best creation win!')
     .setTimestamp();
-  
+
   await channel.send({ embeds: [beginEmbed] });
   await delay(MESSAGE_DELAY_MS);
-  
-  // Store the initial bracket order (seed based on join order)
-  // This ensures consistent bracket structure
-  let currentBracket = [...remainingPlayers];
-  
+
   while (remainingPlayers.length > 1) {
+    const roundPlan = buildRoundPlan(remainingPlayers, battleHistory);
+    const matchupText = formatRoundPlan(roundPlan);
     const roundEmbed = new EmbedBuilder()
       .setTitle(`🔰 ROUND ${round} - ${remainingPlayers.length} Warriors Remain 🔰`)
       .setColor(0x4169E1)
-      .setDescription(`⚔️ **Matchups for Round ${round}:**\n\n${generateMatchupList(remainingPlayers)}\n\n🎲 The battles will now commence...`)
+      .setDescription(`⚔️ **Matchups for Round ${round}:**\n\n${matchupText}\n\n🎲 The battles will now commence...`)
       .setTimestamp();
-    
+
     await channel.send({ embeds: [roundEmbed] });
     await delay(MESSAGE_DELAY_MS);
-    
+
     const nextRound = [];
-    const byesThisRound = [];
-    
-    // Calculate number of byes needed to make even number
-    const totalPlayers = remainingPlayers.length;
-    const nextRoundSize = Math.ceil(totalPlayers / 2);
-    const numByes = totalPlayers % 2;
-    
-    // Sort players to ensure fair distribution (don't give same player bye repeatedly)
-    // Sort by number of previous byes (track if needed) or just maintain order
-    let playersToMatch = [...remainingPlayers];
-    
-    // If there's an odd number, give bye to a player who hasn't had one yet
-    if (numByes === 1) {
-      // Find player with fewest byes (track in battleHistory)
-      const byeCounts = new Map();
-      battleHistory.forEach(battle => {
-        if (battle.bye) {
-          byeCounts.set(battle.bye, (byeCounts.get(battle.bye) || 0) + 1);
-        }
-      });
-      
-      // Sort players by bye count (ascending)
-      playersToMatch.sort((a, b) => {
-        const aByes = byeCounts.get(a.user.id) || 0;
-        const bByes = byeCounts.get(b.user.id) || 0;
-        return aByes - bByes;
-      });
-      
-      const byePlayer = playersToMatch.shift();
+
+    if (roundPlan.byePlayer) {
+      const byeCounts = getByeCounts(battleHistory);
+      const byePlayer = roundPlan.byePlayer;
       nextRound.push(byePlayer);
-      byesThisRound.push(byePlayer.user.displayName);
-      
+
       const byeEmbed = new EmbedBuilder()
         .setTitle('🎲 BYE ROUND')
         .setColor(0x9370DB)
-        .setDescription(`🏅 ${byePlayer.user.displayName} gets a BYE and advances automatically to the next round!\n\n*${byePlayer.user.displayName} had ${(byeCounts.get(byePlayer.user.id) || 0)} bye(s) so far*`)
+        .setDescription(`🏅 ${getPlayerName(byePlayer)} gets a BYE and advances automatically to the next round!\n\n*${getPlayerName(byePlayer)} had ${(byeCounts.get(byePlayer.user.id) || 0)} bye(s) before this round*`)
         .setTimestamp();
-      
+
       await channel.send({ embeds: [byeEmbed] });
       await delay(MESSAGE_DELAY_MS);
-      
+
       battleHistory.push({
         round,
-        battle: `${byePlayer.user.displayName} - BYE`,
-        winner: byePlayer.user.displayName,
-        reason: "Received a bye to the next round!",
+        battle: `${getPlayerName(byePlayer)} - BYE`,
+        winner: getPlayerName(byePlayer),
+        reason: 'Received a bye to the next round!',
         bye: byePlayer.user.id
       });
     }
-    
-    // Now match up the remaining players in fixed order (not random)
-    // Using deterministic pairing based on current order
-    for (let i = 0; i < playersToMatch.length; i += 2) {
-      const p1 = playersToMatch[i];
-      const p2 = playersToMatch[i + 1];
-      
-      if (!p2) {
-        // This shouldn't happen if we handled byes correctly, but just in case
-        nextRound.push(p1);
-        continue;
-      }
-      
+
+    for (const [p1, p2] of roundPlan.matches) {
       // Battle announcement - reveal creations immediately
       const battleEmbed = new EmbedBuilder()
-        .setTitle(`⚔️ BATTLE: ${p1.user.displayName} vs ${p2.user.displayName} ⚔️`)
+        .setTitle(`⚔️ BATTLE: ${getPlayerName(p1)} vs ${getPlayerName(p2)} ⚔️`)
         .setColor(0xFFD700)
         .addFields(
-          { name: `${p1.user.displayName}'s Creation`, value: `**${p1.weapon}**`, inline: true },
-          { name: `${p2.user.displayName}'s Creation`, value: `**${p2.weapon}**`, inline: true },
+          { name: `${getPlayerName(p1)}'s Creation`, value: `**${p1.weapon}**`, inline: true },
+          { name: `${getPlayerName(p2)}'s Creation`, value: `**${p2.weapon}**`, inline: true },
           { name: 'Theme', value: theme || 'Open Battle', inline: true }
         )
         .setTimestamp();
-      
+
       await channel.send({ embeds: [battleEmbed] });
       await delay(MESSAGE_DELAY_MS);
-      
+
       // Get AI judgment
-      const judgment = await judgeBattleAI(p1.weapon, p2.weapon, theme, p1.user.displayName, p2.user.displayName);
+      const judgment = await judgeBattleAI(p1.weapon, p2.weapon, theme, getPlayerName(p1), getPlayerName(p2));
       const winner = judgment.winner === 'B' ? p2 : p1;
       nextRound.push(winner);
-      
+
       battleHistory.push({
         round,
-        battle: `${p1.user.displayName} (${p1.weapon}) vs ${p2.user.displayName} (${p2.weapon})`,
-        winner: winner.user.displayName,
+        battle: `${getPlayerName(p1)} (${p1.weapon}) vs ${getPlayerName(p2)} (${p2.weapon})`,
+        winner: getPlayerName(winner),
         reason: judgment.reason
       });
-      
+
       // Victory announcement
       const victoryEmbed = new EmbedBuilder()
-        .setTitle(`🏅 VICTORY: ${winner.user.displayName} advances! 🏅`)
+        .setTitle(`🏅 VICTORY: ${getPlayerName(winner)} advances! 🏅`)
         .setColor(0x00FF00)
         .setDescription(judgment.reason)
         .addFields(
@@ -549,14 +580,14 @@ async function runTournament(channel, players, theme) {
           { name: 'Status', value: '✅ Moves to next round', inline: true }
         )
         .setTimestamp();
-      
+
       await channel.send({ embeds: [victoryEmbed] });
       await delay(MESSAGE_DELAY_MS);
     }
-    
+
     remainingPlayers = nextRound;
     round++;
-    
+
     // Add delay between rounds
     if (remainingPlayers.length > 1) {
       const nextRoundEmbed = new EmbedBuilder()
@@ -568,23 +599,23 @@ async function runTournament(channel, players, theme) {
       await delay(MESSAGE_DELAY_MS);
     }
   }
-  
+
   // Champion announcement
   const champion = remainingPlayers[0];
   const championEmbed = new EmbedBuilder()
     .setTitle('👑 GRAND CHAMPION CROWNED! 👑')
     .setColor(0xFFD700)
-    .setDescription(`# **${champion.user.displayName}**\n### *${champion.weapon}*`)
+    .setDescription(`# **${getPlayerName(champion)}**\n### *${champion.weapon}*`)
     .addFields(
       { name: '🏆 Victory', value: 'Has conquered all opponents and claimed the title of Ultimate Creator!', inline: true },
-      { name: '⚔️ Battles Won', value: `${battleHistory.filter(b => b.winner === champion.user.displayName && !b.bye).length}`, inline: true }
+      { name: '⚔️ Battles Won', value: `${battleHistory.filter(b => b.winner === getPlayerName(champion) && !b.bye).length}`, inline: true }
     )
     .setImage('https://media.giphy.com/media/3o7abB06u9bNzA8LC8/giphy.gif')
     .setTimestamp();
-  
+
   await channel.send({ embeds: [championEmbed] });
   await delay(MESSAGE_DELAY_MS);
-  
+
   // Battle summary
   if (battleHistory.length > 0) {
     const summaryEmbed = new EmbedBuilder()
@@ -592,19 +623,19 @@ async function runTournament(channel, players, theme) {
       .setColor(0x4B0082)
       .setDescription('Here\'s how the epic battles unfolded:')
       .setTimestamp();
-    
+
     await channel.send({ embeds: [summaryEmbed] });
     await delay(MESSAGE_DELAY_MS / 2);
-    
+
     const summaryText = battleHistory.map((b, idx) => `**${idx + 1}.** ${b.battle}\n🏆 Winner: ${b.winner}\n💭 ${b.reason}`).join('\n\n');
-    
+
     if (summaryText.length <= 4000) {
       const battleDetailsEmbed = new EmbedBuilder()
         .setTitle('📜 Battle Details')
         .setColor(0x4B0082)
         .setDescription(summaryText)
         .setTimestamp();
-      
+
       await channel.send({ embeds: [battleDetailsEmbed] });
     } else {
       for (const battle of battleHistory) {
@@ -613,28 +644,12 @@ async function runTournament(channel, players, theme) {
           .setColor(0x4B0082)
           .setDescription(`**${battle.battle}**\n🏆 Winner: ${battle.winner}\n💭 ${battle.reason}`)
           .setTimestamp();
-        
+
         await channel.send({ embeds: [battleDetailEmbed] });
         await delay(MESSAGE_DELAY_MS / 2);
       }
     }
   }
-}
-
-// Helper function to generate matchup list
-function generateMatchupList(players) {
-  const shuffled = [...players].sort(() => Math.random() - 0.5);
-  const matchups = [];
-  
-  for (let i = 0; i < shuffled.length; i += 2) {
-    if (shuffled[i + 1]) {
-      matchups.push(`⚔️ ${shuffled[i].user.displayName} vs ${shuffled[i + 1].user.displayName}`);
-    } else {
-      matchups.push(`🎲 ${shuffled[i].user.displayName} gets a BYE`);
-    }
-  }
-  
-  return matchups.join('\n');
 }
 
 // Start voting phase
